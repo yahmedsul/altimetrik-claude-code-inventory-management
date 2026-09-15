@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from pydantic import BaseModel
-from mock_data import inventory_items, orders, demand_forecasts, backlog_items, spending_summary, monthly_spending, category_spending, recent_transactions, purchase_orders
+from mock_data import inventory_items, orders, demand_forecasts, backlog_items, spending_summary, monthly_spending, category_spending, recent_transactions, purchase_orders, restocking_orders
 
 app = FastAPI(title="Factory Inventory Management System")
 
@@ -119,6 +119,31 @@ class CreatePurchaseOrderRequest(BaseModel):
     unit_cost: float
     expected_delivery_date: str
     notes: Optional[str] = None
+
+class RestockingOrderItem(BaseModel):
+    sku: str
+    name: str
+    category: str
+    warehouse: str
+    quantity: int
+    unit_cost: float
+    line_total: float
+    trend: str  # "increasing" | "stable" | "decreasing"
+
+class RestockingOrder(BaseModel):
+    id: str
+    order_number: str
+    items: List[RestockingOrderItem]
+    total_cost: float
+    status: str
+    order_date: str
+    expected_delivery: str  # always order_date + 7 days
+    source: str = "restocking"
+
+class CreateRestockingOrderRequest(BaseModel):
+    items: List[RestockingOrderItem]
+    total_cost: float
+    order_date: str
 
 # API endpoints
 @app.get("/")
@@ -303,6 +328,37 @@ def get_monthly_trends():
     result = list(months.values())
     result.sort(key=lambda x: x['month'])
     return result
+
+@app.get("/api/restocking-orders", response_model=List[RestockingOrder])
+def get_restocking_orders():
+    """Return all submitted restocking orders (in-memory, resets on restart)."""
+    return restocking_orders
+
+@app.post("/api/restocking-orders", response_model=RestockingOrder, status_code=201)
+def create_restocking_order(request: CreateRestockingOrderRequest):
+    """Submit a new restocking order built from the Restocking tab recommendations."""
+    from datetime import date, timedelta
+
+    # Derive expected delivery as order_date + 7 days
+    try:
+        order_dt = date.fromisoformat(request.order_date)
+    except ValueError:
+        order_dt = date.today()
+    expected = (order_dt + timedelta(days=7)).isoformat()
+
+    seq = len(restocking_orders) + 1
+    new_order = {
+        "id": f"rst-{seq:04d}",
+        "order_number": f"RST-{request.order_date.replace('-', '')}-{seq:03d}",
+        "items": [item.model_dump() for item in request.items],
+        "total_cost": round(request.total_cost, 2),
+        "status": "Submitted",
+        "order_date": request.order_date,
+        "expected_delivery": expected,
+        "source": "restocking",
+    }
+    restocking_orders.append(new_order)
+    return new_order
 
 if __name__ == "__main__":
     import uvicorn
